@@ -168,7 +168,7 @@ class GameEngine:
         return passed_card, passer, receiver
 
     @staticmethod
-    def auto_pass_card(room: Room) -> Tuple[Card, Player, Player]:
+    def auto_pass_card(room: Room, count_inactivity: bool = True) -> Tuple[Card, Player, Player]:
         """
         Automatically passes a random card from current active player to next player.
         Flags player if consecutive_autopasses threshold reached.
@@ -198,10 +198,11 @@ class GameEngine:
         passer.sort_hand()
         receiver.sort_hand()
 
-        # Update auto-pass counter and flag check
-        passer.consecutive_autopasses += 1
-        if passer.consecutive_autopasses >= CONSECUTIVE_AUTOPASS_FLAG_THRESHOLD:
-            passer.is_flagged = True
+        # Update auto-pass counter and flag check if counting inactivity
+        if count_inactivity:
+            passer.consecutive_autopasses += 1
+            if passer.consecutive_autopasses >= CONSECUTIVE_AUTOPASS_FLAG_THRESHOLD:
+                passer.is_flagged = True
 
         # Turn progression
         room.round_pass_count += 1
@@ -211,6 +212,13 @@ class GameEngine:
         room.turn_notified_stages = ""
 
         return passed_card, passer, receiver
+
+    @staticmethod
+    def skip_turn(room: Room) -> Tuple[Card, Player, Player]:
+        """
+        Server passes a random card from current player's hand to next player without flagging for inactivity.
+        """
+        return GameEngine.auto_pass_card(room, count_inactivity=False)
 
     @staticmethod
     def validate_claim_victory(
@@ -315,14 +323,17 @@ class GameEngine:
     @staticmethod
     def transfer_host(room: Room) -> Optional[Player]:
         """
-        Transfers host to the next active player in seat order.
+        Transfers host to the earliest-joined remaining player.
         """
-        active = room.active_players
-        if not active:
-            return None
-        # Try to pick next active player after current host
-        new_host = room.next_active_player_after(room.host_id)
-        if not new_host:
-            new_host = active[0]
+        candidates = [p for p in room.players if not p.is_removed and p.user_id != room.host_id]
+        if not candidates:
+            remaining = [p for p in room.players if not p.is_removed]
+            if not remaining:
+                room.host_id = 0
+                return None
+            new_host = remaining[0]
+            room.host_id = new_host.user_id
+            return new_host
+        new_host = min(candidates, key=lambda p: p.seat_order)
         room.host_id = new_host.user_id
         return new_host

@@ -40,11 +40,13 @@ Select your bot and paste the following block:
 start - Start the game (host, in a group)
 newgame - Create a room and become host
 join - Join an open lobby
-leave - Leave the current room
+leave - Leave the game
+add - Add a player (host or admin). Reply to their message with /add
+remove - Remove a player (host or admin)
+skip - Skip the current player's turn (host or admin)
 open - Open the lobby so players can join (host only)
 close - Close the lobby to block new players (host only)
 kill - End the current game (host only)
-remove - Remove an inactive player (host only)
 rules - How to play
 score - Show the scoreboard
 help - List all commands

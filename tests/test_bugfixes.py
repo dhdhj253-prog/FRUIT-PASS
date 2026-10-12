@@ -74,13 +74,12 @@ async def test_five_users_concurrent_join(temp_db, mock_bot):
     user_ids = {p["user_id"] for p in db_players}
     assert user_ids == {1, 2, 3, 4, 5, 6}
 
-    # Lobby text shows real player list and "Players: 6/8"
+    # Lobby text shows real player list and "Players (6/8):"
     lobby_text = msgs.get_lobby_text(final_room)
-    assert "Players: *6/8*" in lobby_text
-    assert "*Players:*" in lobby_text
+    assert "Players (6/8):" in lobby_text
     assert "Seating & Turn Order" not in lobby_text
     for uid in range(2, 7):
-        assert f"@user_{uid}" in lobby_text
+        assert f"Player_{uid}" in lobby_text
 
 
 # ---------------------------------------------------------------------------

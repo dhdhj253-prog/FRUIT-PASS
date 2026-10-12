@@ -142,7 +142,8 @@ async def test_start_with_payload_auto_seats(temp_db, mock_bot):
     # 4. Announcement sent to group
     mock_bot.send_message.assert_called_with(
         chat_id=100,
-        text="➕ Bob joined (2/8 players)",
+        text="➕ Bob has joined the game! (2/8 players)",
+        parse_mode="HTML",
     )
 
 

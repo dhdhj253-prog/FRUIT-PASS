@@ -157,7 +157,7 @@ async def test_group_admin_not_in_game_can_use_all_controls(temp_db, mock_bot):
 
     rmcnf_update = make_callback_update(chat_id=100, user_id=99, first_name="AdminAlice", data="rmcnf:100:2")
     await handlers.handle_callback_query(rmcnf_update, context)
-    assert "⚠️ P2 was removed by AdminAlice." in rmcnf_update.callback_query.edit_message_text.call_args[0][0]
+    assert "🚫 P2 was removed by AdminAlice." in rmcnf_update.callback_query.edit_message_text.call_args[0][0]
     room = await temp_db.load_room(100)
     assert room.get_player(2).is_removed is True
     assert 99 not in [p.user_id for p in room.players]

@@ -122,20 +122,19 @@ def get_lobby_text(room: Room) -> str:
     lines = [
         f"🍎 *Fruit Pass — Game Lobby* ({status_tag})",
         f"🎯 Rounds: *{room.total_rounds}*",
-        f"👥 Players: *{total_count}/8*",
         "",
-        "*Players:*",
+        f"Players ({total_count}/8):",
     ]
     for i, p in enumerate(active, start=1):
         host_tag = " (Host)" if p.user_id == room.host_id else ""
         flag_tag = " ⚠️" if p.is_flagged else ""
-        lines.append(f"{i}. {p.mention}{host_tag}{flag_tag}")
+        lines.append(f"{i}. {get_player_display_name(p)}{host_tag}{flag_tag}")
 
     if waiting:
         lines.append("")
         lines.append("*Waiting for next round:*")
         for p in waiting:
-            lines.append(f"• {p.mention}")
+            lines.append(f"• {get_player_display_name(p)}")
 
     lines.append("")
     if len(active) < 4:
@@ -222,7 +221,14 @@ def get_scoreboard_text(room: Room, is_final: bool = False) -> str:
     # Sort all players by score descending
     sorted_players = sorted(room.players, key=lambda x: x.score, reverse=True)
     for i, p in enumerate(sorted_players, start=1):
-        status = " (removed)" if p.is_removed else (" ⚠️" if p.is_flagged else "")
+        if getattr(p, "is_left", False):
+            status = " (left)"
+        elif p.is_removed:
+            status = " (removed)"
+        elif p.is_flagged:
+            status = " ⚠️"
+        else:
+            status = ""
         host_tag = " (Host)" if p.user_id == room.host_id else ""
         lines.append(f"{i}. {get_player_display_name(p)}: *{p.score} pt{'s' if p.score != 1 else ''}*{status}{host_tag}")
 
@@ -247,3 +253,41 @@ def get_kill_confirm_text() -> str:
 
 def get_kill_announcement(scores_text: str, actor_name: str = "the host") -> str:
     return f"💀 The game was ended by {actor_name}. Scores so far:\n\n{scores_text}\n\nUse /newgame to start a new one."
+
+
+def get_leave_lobby_announcement(player: Player, remaining_count: int) -> str:
+    name = html.escape(get_player_display_name(player))
+    return f"🚪 {name} has left the game. ({remaining_count}/8)"
+
+
+def get_leave_match_announcement(player: Player) -> str:
+    name = html.escape(get_player_display_name(player))
+    return f"🚪 {name} has left the game."
+
+
+def get_host_transferred_announcement(new_host: Player) -> str:
+    name = html.escape(get_player_display_name(new_host))
+    return f"👑 {name} is now the host."
+
+
+def get_removed_announcement(target_name: str, actor_name: str) -> str:
+    t_name = html.escape(target_name)
+    a_name = html.escape(actor_name)
+    return f"🚫 {t_name} was removed by {a_name}."
+
+
+def get_skipped_announcement(passer_name: str, actor_name: str) -> str:
+    p_name = html.escape(passer_name)
+    a_name = html.escape(actor_name)
+    return f"⏭ {p_name}'s turn was skipped by {a_name}."
+
+
+def get_added_announcement(target_name: str, actor_name: str, count: int) -> str:
+    t_name = html.escape(target_name)
+    a_name = html.escape(actor_name)
+    return f"➕ {t_name} was added to the game by {a_name}. ({count}/8 players)"
+
+
+def get_joined_announcement(display_name: str, count: int) -> str:
+    name = html.escape(display_name)
+    return f"➕ {name} has joined the game! ({count}/8 players)"

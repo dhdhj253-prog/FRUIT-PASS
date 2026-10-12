@@ -60,11 +60,12 @@ def get_start_bot_keyboard(deep_link: str) -> InlineKeyboardMarkup:
 
 
 def get_remove_list_keyboard(room: Room) -> InlineKeyboardMarkup:
-    flagged_players = [p for p in room.active_players if p.is_flagged]
+    removable = [p for p in room.players if p.user_id != room.host_id and not p.is_removed]
     rows: List[List[InlineKeyboardButton]] = []
-    for p in flagged_players:
+    for p in removable:
+        prefix = "⚠️ " if p.is_flagged else ""
         rows.append([
-            InlineKeyboardButton(f"⚠️ {p.display_name}", callback_data=f"rmsel:{room.chat_id}:{p.user_id}")
+            InlineKeyboardButton(f"{prefix}{p.display_name}", callback_data=f"rmsel:{room.chat_id}:{p.user_id}")
         ])
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data=f"rmcan:{room.chat_id}")])
     return InlineKeyboardMarkup(rows)
@@ -73,8 +74,17 @@ def get_remove_list_keyboard(room: Room) -> InlineKeyboardMarkup:
 def get_remove_confirm_keyboard(room_id: int, target_user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Confirm Remove", callback_data=f"rmcnf:{room_id}:{target_user_id}"),
+            InlineKeyboardButton("✅ Remove", callback_data=f"rmcnf:{room_id}:{target_user_id}"),
             InlineKeyboardButton("❌ Cancel", callback_data=f"rmcan:{room_id}"),
+        ]
+    ])
+
+
+def get_leave_confirm_keyboard(room_id: int, user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Leave", callback_data=f"lvcnf:{room_id}:{user_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"lvcan:{room_id}:{user_id}"),
         ]
     ])
 

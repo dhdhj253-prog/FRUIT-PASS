@@ -437,6 +437,7 @@ class GameService:
                 active = room.active_players
                 if existing and existing.is_removed:
                     existing.is_removed = False
+                    existing.is_left = False
                     existing.is_waiting = False
                     existing.seat_order = len(active)
                     if last_name:
@@ -463,6 +464,7 @@ class GameService:
             elif room.state == RoomState.PLAYING:
                 if existing and existing.is_removed:
                     existing.is_removed = False
+                    existing.is_left = False
                     existing.is_waiting = True
                     if last_name:
                         existing.last_name = last_name
@@ -518,36 +520,136 @@ class GameService:
             else:
                 return room, "Cannot join this room."
 
-    async def leave_room(self, chat_id: int, user_id: int) -> Tuple[Optional[Room], str]:
+    async def leave_room(
+        self, chat_id: int, user_id: int, confirmed: bool = False
+    ) -> Tuple[Optional[Room], str]:
         """
-        Player leaves lobby.
+        Handles player leave in lobby or mid-match.
         """
         async with self.get_lock(chat_id):
             room = await self.db.load_room(chat_id)
             if not room:
-                return None, "Room not found."
-
-            if room.state != RoomState.LOBBY:
-                return room, "Cannot leave while game is active. Use /remove or wait for match to finish."
+                return None, "You're not in this game."
 
             player = room.get_player(user_id)
             if not player or player.is_removed:
-                return room, "You are not in this lobby."
+                return room, "You're not in this game."
 
-            room.players = [p for p in room.players if p.user_id != user_id]
-            for i, p in enumerate(room.players):
-                p.seat_order = i
+            # If player was in waiting queue, remove them directly
+            if player.is_waiting:
+                room.players = [p for p in room.players if p.user_id != user_id]
+                for i, p in enumerate(room.players):
+                    p.seat_order = i
+                new_host = None
+                if room.host_id == user_id:
+                    if room.players:
+                        new_host = GameEngine.transfer_host(room)
+                await self.db.save_room(room)
+                if self.bot:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=chat_id,
+                            text=msgs.get_leave_match_announcement(player),
+                            parse_mode="HTML",
+                        )
+                        if new_host:
+                            await self.bot.send_message(
+                                chat_id=chat_id,
+                                text=msgs.get_host_transferred_announcement(new_host),
+                                parse_mode="HTML",
+                            )
+                    except Exception as e:
+                        logger.error("Error announcing leave: %s", e)
+                return room, "You left the waiting queue."
 
-            if room.host_id == user_id:
-                if room.players:
-                    room.host_id = room.players[0].user_id
-                else:
-                    room.state = RoomState.CLOSED
-                    await self.db.delete_room(chat_id)
-                    return room, "Host left and room closed."
+            # Lobby leave
+            if room.state == RoomState.LOBBY:
+                room.players = [p for p in room.players if p.user_id != user_id]
+                for i, p in enumerate(room.players):
+                    p.seat_order = i
+
+                new_host = None
+                if room.host_id == user_id:
+                    if room.players:
+                        new_host = GameEngine.transfer_host(room)
+                    else:
+                        room.state = RoomState.CLOSED
+                        await self.db.delete_room(chat_id)
+                        if self.bot:
+                            try:
+                                await self.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=msgs.get_leave_lobby_announcement(player, 0),
+                                    parse_mode="HTML",
+                                )
+                            except Exception as e:
+                                logger.error("Error announcing leave: %s", e)
+                        return room, "Host left and room closed."
+
+                await self.db.save_room(room)
+                count = len(room.all_current_players)
+                if self.bot:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=chat_id,
+                            text=msgs.get_leave_lobby_announcement(player, count),
+                            parse_mode="HTML",
+                        )
+                        if new_host:
+                            await self.bot.send_message(
+                                chat_id=chat_id,
+                                text=msgs.get_host_transferred_announcement(new_host),
+                                parse_mode="HTML",
+                            )
+                    except Exception as e:
+                        logger.error("Error announcing leave: %s", e)
+
+                await self.update_lobby_message(chat_id)
+                return room, "You left the lobby."
+
+            # Mid-match leave
+            if not confirmed:
+                return room, "CONFIRM_REQUIRED"
+
+            player.is_left = True
+            old_host_id = room.host_id
+
+            round_voided, can_continue = GameEngine.remove_player_and_handle_state(
+                room, user_id
+            )
+            new_host = room.get_player(room.host_id) if old_host_id == user_id and room.host_id else None
+
+            if round_voided and can_continue:
+                starter, newly_seated = GameEngine.deal_round(room, room.current_round)
 
             await self.db.save_room(room)
-            return room, "You left the lobby."
+            self.invalidate_room_tokens(chat_id)
+
+            if self.bot:
+                try:
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=msgs.get_leave_match_announcement(player),
+                        parse_mode="HTML",
+                    )
+                    if new_host:
+                        await self.bot.send_message(
+                            chat_id=chat_id,
+                            text=msgs.get_host_transferred_announcement(new_host),
+                            parse_mode="HTML",
+                        )
+                except Exception as e:
+                    logger.error("Error announcing leave: %s", e)
+
+            if round_voided and can_continue:
+                await self.update_table_message(room, last_event=f"🚪 {player.display_name} left the game.")
+                asyncio.create_task(
+                    self.send_round_transition_messages(room, starter, newly_seated)
+                )
+            elif not can_continue:
+                await self.update_table_message(room, last_event="⏸ Match paused (fewer than 4 players).")
+
+            return room, "You left the game."
 
     async def start_match(
         self, chat_id: int, requester_id: int, sender_chat_id: Optional[int] = None
@@ -786,9 +888,10 @@ class GameService:
         target_user_id: int = 0,
         sender_chat_id: Optional[int] = None,
         host_id: Optional[int] = None,
+        actor_name: str = "Admin",
     ) -> Tuple[bool, str, bool, bool]:
         """
-        Host or group admin removes an inactive/flagged player.
+        Host or group admin removes a player (in lobby or mid-match).
         """
         if requester_id is None:
             requester_id = host_id if host_id is not None else 0
@@ -806,8 +909,28 @@ class GameService:
             if not target or target.is_removed:
                 return False, "Player not found or already removed.", False, False
 
-            if not target.is_flagged:
-                return False, "Only flagged (⚠️) inactive players can be removed.", False, False
+            if target_user_id == room.host_id:
+                return False, "The host cannot be removed.", False, False
+
+            remove_text = msgs.get_removed_announcement(target.display_name, actor_name)
+
+            if room.state == RoomState.LOBBY:
+                room.players = [p for p in room.players if p.user_id != target_user_id]
+                for i, p in enumerate(room.players):
+                    p.seat_order = i
+                await self.db.save_room(room)
+                self.invalidate_room_tokens(chat_id)
+                if self.bot:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=chat_id,
+                            text=remove_text,
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        logger.error("Error announcing removal: %s", e)
+                await self.update_lobby_message(chat_id)
+                return True, f"Player {target.display_name} was removed.", False, True
 
             round_voided, can_continue = GameEngine.remove_player_and_handle_state(
                 room, target_user_id
@@ -819,13 +942,176 @@ class GameService:
             await self.db.save_room(room)
             self.invalidate_room_tokens(chat_id)
 
+            if self.bot:
+                try:
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=remove_text,
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.error("Error announcing removal: %s", e)
+
             if round_voided and can_continue:
-                await self.update_table_message(room, last_event="🔄 Round redealt due to player removal.")
+                await self.update_table_message(room, last_event=f"🚫 {target.display_name} was removed.")
                 asyncio.create_task(
                     self.send_round_transition_messages(room, starter, newly_seated)
                 )
             elif not can_continue:
                 await self.update_table_message(room, last_event="⏸ Match paused (fewer than 4 players).")
 
-            return True, f"Player {target.first_name} was removed.", round_voided, can_continue
+            return True, f"Player {target.display_name} was removed.", round_voided, can_continue
+
+    async def process_skip(
+        self,
+        chat_id: int,
+        requester_id: int,
+        sender_chat_id: Optional[int] = None,
+        actor_name: str = "Admin",
+    ) -> Tuple[bool, str, Optional[Player], Optional[Player]]:
+        """
+        Privileged skip of current player's turn. Passes a random card without inactivity flagging.
+        """
+        async with self.get_lock(chat_id):
+            room = await self.db.load_room(chat_id)
+            if not room:
+                return False, "Room not found.", None, None
+
+            is_priv = await self.is_privileged_user(chat_id, requester_id, sender_chat_id)
+            if not is_priv:
+                return False, "Only the host or a group admin can do that.", None, None
+
+            if room.state != RoomState.PLAYING or not room.get_active_player():
+                return False, "There's no active turn to skip.", None, None
+
+            passer = room.get_active_player()
+            try:
+                passed_card, passer, receiver = GameEngine.skip_turn(room)
+                await self.db.save_room(room)
+            except ValueError as e:
+                logger.error("Skip error in room %s: %s", chat_id, e)
+                return False, "There's no active turn to skip.", None, None
+
+            self.invalidate_room_tokens(chat_id)
+
+            skip_text = msgs.get_skipped_announcement(passer.display_name, actor_name)
+            await self.update_table_message(room, last_event=skip_text)
+
+            if self.bot:
+                try:
+                    await self.bot.send_message(
+                        chat_id=room.chat_id,
+                        text=skip_text,
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.error("Error sending skip announcement: %s", e)
+
+            await self.send_turn_panel(room, receiver)
+            return True, "", passer, receiver
+
+    async def add_player(
+        self,
+        chat_id: int,
+        requester_id: int,
+        target_id: int,
+        target_first_name: str,
+        target_username: Optional[str] = None,
+        target_last_name: Optional[str] = None,
+        sender_chat_id: Optional[int] = None,
+        actor_name: str = "Admin",
+    ) -> Tuple[bool, str]:
+        """
+        Privileged add of a target player into the room.
+        Overrides closed lobby; in match, queues player for next round.
+        """
+        async with self.get_lock(chat_id):
+            room = await self.db.load_room(chat_id)
+            if not room or room.state in [RoomState.CLOSED, RoomState.MATCH_OVER]:
+                return False, "No active room in this group."
+
+            is_priv = await self.is_privileged_user(chat_id, requester_id, sender_chat_id)
+            if not is_priv:
+                return False, "Only the host or a group admin can do that."
+
+            target_display = f"{target_first_name} {target_last_name}" if target_last_name else target_first_name
+
+            existing = room.get_player(target_id)
+            if existing and not existing.is_removed:
+                return False, f"{target_display} is already in the game."
+
+            active_room = await self.db.get_active_room_for_user(target_id)
+            if active_room and active_room.chat_id != chat_id:
+                return False, f"{target_display} is already in another game."
+
+            if len(room.all_current_players) >= MAX_PLAYERS:
+                return False, f"Room is full (maximum {MAX_PLAYERS} players)."
+
+            if room.state == RoomState.LOBBY:
+                if existing and existing.is_removed:
+                    existing.is_removed = False
+                    existing.is_left = False
+                    existing.is_waiting = False
+                    existing.seat_order = len(room.active_players)
+                    if target_last_name:
+                        existing.last_name = target_last_name
+                else:
+                    new_player = Player(
+                        user_id=target_id,
+                        room_id=chat_id,
+                        username=target_username,
+                        first_name=target_first_name,
+                        last_name=target_last_name,
+                        seat_order=len(room.active_players),
+                        is_waiting=False,
+                    )
+                    room.players.append(new_player)
+                await self.db.save_room(room)
+                count = len(room.all_current_players)
+                announcement = msgs.get_added_announcement(target_display, actor_name, count)
+                if self.bot:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=chat_id,
+                            text=announcement,
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        logger.error("Error announcing add: %s", e)
+                await self.update_lobby_message(chat_id)
+                return True, ""
+            else:
+                # Mid-match: queue as waiting for next round
+                if existing and existing.is_removed:
+                    existing.is_removed = False
+                    existing.is_left = False
+                    existing.is_waiting = True
+                    existing.seat_order = len(room.players)
+                    if target_last_name:
+                        existing.last_name = target_last_name
+                else:
+                    new_player = Player(
+                        user_id=target_id,
+                        room_id=chat_id,
+                        username=target_username,
+                        first_name=target_first_name,
+                        last_name=target_last_name,
+                        seat_order=len(room.players),
+                        is_waiting=True,
+                    )
+                    room.players.append(new_player)
+                await self.db.save_room(room)
+                count = len(room.all_current_players)
+                announcement = msgs.get_added_announcement(target_display, actor_name, count)
+                if self.bot:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=chat_id,
+                            text=announcement,
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        logger.error("Error announcing add: %s", e)
+                await self.update_table_message(room, last_event=f"➕ {target_display} joined queue.")
+                return True, ""
 

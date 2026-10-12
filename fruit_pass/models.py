@@ -60,6 +60,7 @@ class Player(BaseModel):
     consecutive_autopasses: int = 0
     is_flagged: bool = False
     is_removed: bool = False
+    is_left: bool = False
     is_waiting: bool = False
     hand_message_id: Optional[int] = None
     last_received_card_id: Optional[str] = None

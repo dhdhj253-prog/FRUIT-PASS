@@ -79,6 +79,7 @@ class Database:
                     is_flagged INTEGER NOT NULL DEFAULT 0,
                     is_removed INTEGER NOT NULL DEFAULT 0,
                     is_waiting INTEGER NOT NULL DEFAULT 0,
+                    is_left INTEGER NOT NULL DEFAULT 0,
                     hand_message_id INTEGER,
                     last_received_card_id TEXT,
                     PRIMARY KEY (room_id, user_id),
@@ -95,6 +96,10 @@ class Database:
                 pass
             try:
                 await db.execute("ALTER TABLE players ADD COLUMN last_name TEXT;")
+            except Exception:
+                pass
+            try:
+                await db.execute("ALTER TABLE players ADD COLUMN is_left INTEGER NOT NULL DEFAULT 0;")
             except Exception:
                 pass
 
@@ -204,9 +209,9 @@ class Database:
                         """
                         INSERT INTO players (
                             room_id, user_id, username, first_name, last_name, seat_order,
-                            score, consecutive_autopasses, is_flagged, is_removed,
+                            score, consecutive_autopasses, is_flagged, is_removed, is_left,
                             is_waiting, hand_message_id, last_received_card_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(room_id, user_id) DO UPDATE SET
                             username = excluded.username,
                             first_name = excluded.first_name,
@@ -216,6 +221,7 @@ class Database:
                             consecutive_autopasses = excluded.consecutive_autopasses,
                             is_flagged = excluded.is_flagged,
                             is_removed = excluded.is_removed,
+                            is_left = excluded.is_left,
                             is_waiting = excluded.is_waiting,
                             hand_message_id = excluded.hand_message_id,
                             last_received_card_id = excluded.last_received_card_id
@@ -231,6 +237,7 @@ class Database:
                             p.consecutive_autopasses,
                             1 if p.is_flagged else 0,
                             1 if p.is_removed else 0,
+                            1 if getattr(p, "is_left", False) else 0,
                             1 if p.is_waiting else 0,
                             p.hand_message_id,
                             p.last_received_card_id,
@@ -300,6 +307,7 @@ class Database:
                         consecutive_autopasses=prow["consecutive_autopasses"],
                         is_flagged=bool(prow["is_flagged"]),
                         is_removed=bool(prow["is_removed"]),
+                        is_left=bool(prow["is_left"]) if "is_left" in prow.keys() else False,
                         is_waiting=bool(prow["is_waiting"]) if "is_waiting" in prow.keys() else False,
                         hand_message_id=prow["hand_message_id"],
                         last_received_card_id=prow["last_received_card_id"] if "last_received_card_id" in prow.keys() else None,
@@ -533,6 +541,22 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
+    async def get_user_by_username(self, username: str) -> Optional[dict]:
+        """
+        Retrieves active user record by username (case-insensitive).
+        """
+        clean_username = username.lstrip("@").lower()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM users WHERE lower(username) = ? AND status = 'active' LIMIT 1",
+                (clean_username,),
+            ) as cursor:
                 row = await cursor.fetchone()
                 if not row:
                     return None

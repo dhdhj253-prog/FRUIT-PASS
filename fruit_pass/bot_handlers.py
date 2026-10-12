@@ -8,6 +8,8 @@ from telegram import (
     CallbackQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
+    User,
+    MessageEntity,
 )
 from telegram.error import TelegramError, Forbidden
 from telegram.ext import ContextTypes
@@ -56,6 +58,157 @@ def _extract_actor(update: Update) -> Tuple[Optional[int], str, str, Optional[in
 class BotHandlers:
     def __init__(self, game_service: GameService):
         self.game_service = game_service
+
+    async def handle_join(
+        self,
+        chat_id: int,
+        user: User,
+        origin: str = "cmd",
+        update: Optional[Update] = None,
+        query: Optional[CallbackQuery] = None,
+    ) -> None:
+        try:
+            is_active = await self.game_service.check_user_registered_or_probe(
+                user.id, user.first_name, user.username
+            )
+            if not is_active:
+                deep_link = msgs.get_start_deep_link(f"join_{chat_id}")
+                if query:
+                    await query.answer(url=deep_link)
+                    return
+                if update and update.effective_message:
+                    await update.effective_message.reply_text(
+                        "👋 Start the bot first to join the game.",
+                        reply_markup=kb.get_start_bot_keyboard(deep_link),
+                    )
+                return
+
+            user_display = f"{user.first_name} {user.last_name}" if getattr(user, "last_name", None) else user.first_name
+            room, message = await self.game_service.join_room(
+                chat_id=chat_id,
+                user_id=user.id,
+                first_name=user.first_name,
+                username=user.username,
+                last_name=user.last_name,
+            )
+
+            if not room:
+                if origin == "start" and update and update.effective_message:
+                    await update.effective_message.reply_text(
+                        "That game is no longer open. Ask the host to start a new one."
+                    )
+                elif query:
+                    await query.answer(message, show_alert=True)
+                elif update and update.effective_message:
+                    await update.effective_message.reply_text(message)
+                return
+
+            if message == "You're already in this game.":
+                if query:
+                    await query.answer("You're already in this game.", show_alert=True)
+                elif update and update.effective_message:
+                    await update.effective_message.reply_text("You're already in this game.")
+                return
+
+            if not (message == "Joined successfully." or message.startswith("Joined")):
+                if origin == "start" and update and update.effective_message:
+                    await update.effective_message.reply_text(
+                        "That game is no longer open. Ask the host to start a new one."
+                    )
+                elif query:
+                    await query.answer(message, show_alert=True)
+                elif update and update.effective_message:
+                    await update.effective_message.reply_text(message)
+                return
+
+            # Successful join:
+            # (a) Send in the group: "➕ [Name] has joined the game! ([n]/8 players)"
+            total_players = len(room.all_current_players)
+            announcement = msgs.get_joined_announcement(user_display, total_players)
+            if self.game_service.bot:
+                try:
+                    await self.game_service.bot.send_message(
+                        chat_id=chat_id,
+                        text=announcement,
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.error("Error announcing join in group: %s", e)
+
+            # (b) Update lobby panel in place
+            await self.game_service.update_lobby_message(chat_id)
+
+            if query:
+                await query.answer("Joined successfully!")
+            if origin == "start" and update and update.effective_message:
+                await update.effective_message.reply_text(
+                    msgs.get_join_start_confirmation_text(), parse_mode="Markdown"
+                )
+
+        except Exception as e:
+            logger.error("Error handling join for user %s in room %s: %s", user.id, chat_id, e)
+            if query:
+                try:
+                    await query.answer("Error processing join.", show_alert=True)
+                except Exception:
+                    pass
+            elif update and update.effective_message:
+                await update.effective_message.reply_text("Error processing join.")
+
+    async def handle_leave(
+        self,
+        chat_id: int,
+        user: User,
+        update: Optional[Update] = None,
+        query: Optional[CallbackQuery] = None,
+    ) -> None:
+        try:
+            room = await self.game_service.db.load_room(chat_id)
+            if not room:
+                room = await self.game_service.db.get_active_room_for_user(user.id)
+            if not room:
+                if query:
+                    await query.answer("You're not in this game.", show_alert=True)
+                elif update and update.effective_message:
+                    await update.effective_message.reply_text("You're not in this game.")
+                return
+
+            player = room.get_player(user.id)
+            if not player or player.is_removed:
+                if query:
+                    await query.answer("You're not in this game.", show_alert=True)
+                elif update and update.effective_message:
+                    await update.effective_message.reply_text("You're not in this game.")
+                return
+
+            # In lobby or waiting queue: leave directly
+            if room.state == RoomState.LOBBY or player.is_waiting:
+                room, message = await self.game_service.leave_room(room.chat_id, user.id)
+                if query:
+                    await query.answer("You left the game.")
+                elif update and update.effective_message:
+                    await update.effective_message.reply_text(message)
+                return
+
+            # Mid-match active player: ask for confirmation
+            text = "Leaving will restart the current round for everyone. Leave? ✅ / ❌"
+            reply_markup = kb.get_leave_confirm_keyboard(room.chat_id, user.id)
+            if query:
+                await query.answer()
+                if query.message:
+                    await query.message.reply_text(text, reply_markup=reply_markup)
+            elif update and update.effective_message:
+                await update.effective_message.reply_text(text, reply_markup=reply_markup)
+
+        except Exception as e:
+            logger.error("Error handling leave for user %s in room %s: %s", user.id, chat_id, e)
+            if query:
+                try:
+                    await query.answer("Error processing leave.", show_alert=True)
+                except Exception:
+                    pass
+            elif update and update.effective_message:
+                await update.effective_message.reply_text("Error processing leave.")
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -123,57 +276,13 @@ class BotHandlers:
             except ValueError:
                 room_id = None
 
-            # Reply in private chat: confirmation with rules summary
-            await update.effective_message.reply_text(
-                msgs.get_join_start_confirmation_text(), parse_mode="Markdown"
-            )
-
             if room_id is None:
                 await update.effective_message.reply_text(
                     "That game is no longer open. Ask the host to start a new one."
                 )
                 return
 
-            room = await self.game_service.db.load_room(room_id)
-            if (
-                not room
-                or room.state in [RoomState.CLOSED, RoomState.MATCH_OVER]
-                or room.is_lobby_locked
-                or len(room.all_current_players) >= MAX_PLAYERS
-            ):
-                await update.effective_message.reply_text(
-                    "That game is no longer open. Ask the host to start a new one."
-                )
-                return
-
-            user_display_name = f"{user.first_name} {user.last_name}" if user.last_name else user.first_name
-            joined_room, join_msg = await self.game_service.join_room(
-                chat_id=room_id,
-                user_id=user.id,
-                first_name=user.first_name,
-                username=user.username,
-                last_name=user.last_name,
-            )
-
-            if not joined_room:
-                await update.effective_message.reply_text(
-                    "That game is no longer open. Ask the host to start a new one."
-                )
-                return
-
-            # Announce in the group: "➕ [Name] joined ([n]/8 players)"
-            count = len(joined_room.all_current_players)
-            try:
-                if self.game_service.bot:
-                    await self.game_service.bot.send_message(
-                        chat_id=room_id,
-                        text=f"➕ {user_display_name} joined ({count}/8 players)",
-                    )
-            except Exception as e:
-                logger.error("Error announcing join in group: %s", e)
-
-            # Update lobby message in group
-            await self.game_service.update_lobby_message(room_id)
+            await self.handle_join(room_id, user, origin="start", update=update)
             return
 
         await update.effective_message.reply_text(msgs.get_welcome_text(), parse_mode="Markdown")
@@ -243,33 +352,7 @@ class BotHandlers:
             await update.effective_message.reply_text("Join via the group chat where the game was created.")
             return
 
-        is_active = await self.game_service.check_user_registered_or_probe(user.id, user.first_name, user.username)
-        if not is_active:
-            deep_link = msgs.get_start_deep_link(f"join_{chat.id}")
-            await update.effective_message.reply_text(
-                "👋 Start the bot first to join the game.",
-                reply_markup=kb.get_start_bot_keyboard(deep_link),
-            )
-            return
-
-        user_display = f"{user.first_name} {user.last_name}" if user.last_name else user.first_name
-        room, message = await self.game_service.join_room(
-            chat_id=chat.id,
-            user_id=user.id,
-            first_name=user.first_name,
-            username=user.username,
-            last_name=user.last_name,
-        )
-
-        if not room:
-            await update.effective_message.reply_text(message)
-            return
-
-        if message != "Joined successfully.":
-            await update.effective_message.reply_text(f"{user_display}: {message}")
-            return
-
-        await self.game_service.update_lobby_message(chat.id)
+        await self.handle_join(chat.id, user, origin="cmd", update=update)
 
     async def cmd_leave(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = update.effective_chat
@@ -277,16 +360,7 @@ class BotHandlers:
         if not chat or not user or not update.effective_message:
             return
 
-        room, message = await self.game_service.leave_room(chat.id, user.id)
-        if not room:
-            await update.effective_message.reply_text(message)
-            return
-
-        if room.state == RoomState.CLOSED:
-            await update.effective_message.reply_text("🚪 The host left and the room has been closed.")
-            return
-
-        await self.game_service.update_lobby_message(chat.id)
+        await self.handle_leave(chat.id, user, update=update)
 
     async def cmd_open(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = update.effective_chat
@@ -374,16 +448,126 @@ class BotHandlers:
             await update.effective_message.reply_text("Only the host or a group admin can do that.")
             return
 
-        flagged = [p for p in room.active_players if p.is_flagged]
-        if not flagged:
-            await update.effective_message.reply_text("No inactive flagged (⚠️) players to remove.")
+        removable = [p for p in room.players if p.user_id != room.host_id and not p.is_removed]
+        if not removable:
+            await update.effective_message.reply_text("No other players to remove.")
             return
 
         logger.info("Privileged action remove executed by %s in room %s", actor_log, chat.id)
         await update.effective_message.reply_text(
-            "Select an inactive player to remove:",
+            "Select a player to remove:",
             reply_markup=kb.get_remove_list_keyboard(room),
         )
+
+    async def cmd_skip(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        if not chat or not update.effective_message:
+            return
+
+        user_id, actor_name, actor_log, sender_chat_id = _extract_actor(update)
+        room = await self.game_service.db.load_room(chat.id)
+        if not room or room.state in [RoomState.CLOSED, RoomState.MATCH_OVER]:
+            await update.effective_message.reply_text("No active room in this group.")
+            return
+
+        is_priv = await self.game_service.is_privileged_user(chat.id, user_id, sender_chat_id)
+        if not is_priv:
+            await update.effective_message.reply_text("Only the host or a group admin can do that.")
+            return
+
+        logger.info("Privileged action skip executed by %s in room %s", actor_log, chat.id)
+        success, err_msg, passer, receiver = await self.game_service.process_skip(
+            chat.id, user_id, sender_chat_id=sender_chat_id, actor_name=actor_name
+        )
+        if not success:
+            await update.effective_message.reply_text(err_msg or "There's no active turn to skip.")
+
+    async def cmd_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        if not chat or not update.effective_message:
+            return
+
+        user_id, actor_name, actor_log, sender_chat_id = _extract_actor(update)
+        room = await self.game_service.db.load_room(chat.id)
+        if not room or room.state in [RoomState.CLOSED, RoomState.MATCH_OVER]:
+            await update.effective_message.reply_text("No active room in this group.")
+            return
+
+        is_priv = await self.game_service.is_privileged_user(chat.id, user_id, sender_chat_id)
+        if not is_priv:
+            await update.effective_message.reply_text("Only the host or a group admin can do that.")
+            return
+
+        msg = update.effective_message
+        target_user = None
+
+        # 1. Reply to message with /add
+        if msg.reply_to_message and msg.reply_to_message.from_user:
+            target_user = msg.reply_to_message.from_user
+
+        # 2. Text mention in message entities
+        if not target_user and msg.entities:
+            for entity in msg.entities:
+                if entity.type == MessageEntity.TEXT_MENTION and entity.user:
+                    target_user = entity.user
+                    break
+
+        target_id = None
+        target_first_name = None
+        target_username = None
+        target_last_name = None
+
+        # 3. /add @username
+        if not target_user and context.args:
+            username_arg = context.args[0].lstrip("@")
+            user_row = await self.game_service.db.get_user_by_username(username_arg)
+            if user_row:
+                target_id = user_row["user_id"]
+                target_first_name = user_row["first_name"]
+                target_username = user_row.get("username")
+                target_last_name = user_row.get("last_name")
+
+        if target_user:
+            if target_user.is_bot:
+                await msg.reply_text("Bots can't be added.")
+                return
+            target_id = target_user.id
+            target_first_name = target_user.first_name
+            target_username = target_user.username
+            target_last_name = getattr(target_user, "last_name", None)
+
+        if not target_id:
+            await msg.reply_text(
+                "I couldn't find that person. Reply to their message with /add, or ask them to start the bot first."
+            )
+            return
+
+        target_display = f"{target_first_name} {target_last_name}" if target_last_name else target_first_name
+
+        # Check registration gate
+        is_active = await self.game_service.check_user_registered_or_probe(
+            target_id, target_first_name, target_username
+        )
+        if not is_active:
+            deep_link = msgs.get_start_deep_link(f"join_{chat.id}")
+            await msg.reply_text(
+                f"{target_display} needs to start the bot first.",
+                reply_markup=kb.get_start_bot_keyboard(deep_link),
+            )
+            return
+
+        success, err_msg = await self.game_service.add_player(
+            chat_id=chat.id,
+            requester_id=user_id,
+            target_id=target_id,
+            target_first_name=target_first_name,
+            target_username=target_username,
+            target_last_name=target_last_name,
+            sender_chat_id=sender_chat_id,
+            actor_name=actor_name,
+        )
+        if not success:
+            await msg.reply_text(err_msg)
 
     async def cmd_rules(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.effective_message:
@@ -407,11 +591,13 @@ class BotHandlers:
             "/startgame - Alias to start the game\n"
             "/newgame - Create a room and become host\n"
             "/join - Join an open lobby\n"
-            "/leave - Leave the current room\n"
+            "/leave - Leave the game\n"
+            "/add - Add a player (host or admin). Reply to their message with /add\n"
+            "/remove - Remove a player (host or admin)\n"
+            "/skip - Skip the current player's turn (host or admin)\n"
             "/open - Open the lobby so players can join (host only)\n"
             "/close - Close the lobby to block new players (host only)\n"
             "/kill - End the current game (host only)\n"
-            "/remove - Remove an inactive player (host only)\n"
             "/rules - How to play\n"
             "/score - Show the scoreboard\n"
             "/help - List all commands"
@@ -441,33 +627,7 @@ class BotHandlers:
 
             # Join room via group button
             if action == "join":
-                is_active = await self.game_service.check_user_registered_or_probe(
-                    user.id, user.first_name, user.username
-                )
-                if not is_active:
-                    deep_link = msgs.get_start_deep_link(f"join_{room_id}")
-                    await query.answer(url=deep_link)
-                    return
-
-                room, message = await self.game_service.join_room(
-                    chat_id=room_id,
-                    user_id=user.id,
-                    first_name=user.first_name,
-                    username=user.username,
-                    last_name=user.last_name,
-                )
-                if not room:
-                    await query.answer(message, show_alert=True)
-                    return
-
-                if message == "You're already in this game.":
-                    await query.answer("You're already in this game")
-                elif message == "Joined successfully.":
-                    await query.answer("✅ You joined")
-                else:
-                    await query.answer(message, show_alert=True)
-
-                await self.game_service.update_lobby_message(room_id)
+                await self.handle_join(room_id, user, origin="callback", query=query)
                 return
 
             # Lobby round setting
@@ -525,17 +685,29 @@ class BotHandlers:
                     )
                 return
 
-            # Leave lobby
+            # Leave
             if action == "leave":
-                room, msg_text = await self.game_service.leave_room(room_id, user.id)
-                await query.answer("You left the lobby.")
-                if room and room.state == RoomState.CLOSED:
-                    try:
-                        await query.edit_message_text("🚪 The host left and the room has been closed.")
-                    except Exception:
-                        pass
-                else:
-                    await self.game_service.update_lobby_message(room_id)
+                await self.handle_leave(room_id, user, query=query)
+                return
+
+            if action == "lvcnf":
+                target_user_id = int(parts[2]) if len(parts) > 2 else user.id
+                if user.id != target_user_id:
+                    await query.answer("This confirmation is not for you.", show_alert=True)
+                    return
+                await query.answer()
+                room, msg_text = await self.game_service.leave_room(room_id, user.id, confirmed=True)
+                user_display = f"{user.first_name} {user.last_name}" if getattr(user, "last_name", None) else user.first_name
+                await query.edit_message_text(f"🚪 {user_display} confirmed leaving the game.")
+                return
+
+            if action == "lvcan":
+                target_user_id = int(parts[2]) if len(parts) > 2 else user.id
+                if user.id != target_user_id:
+                    await query.answer("This confirmation is not for you.", show_alert=True)
+                    return
+                await query.answer("Cancelled.")
+                await query.edit_message_text("Leaving cancelled.")
                 return
 
             # Public button or callback Claim Victory
@@ -621,11 +793,11 @@ class BotHandlers:
                 target_user_id = int(parts[2])
                 room = await self.game_service.db.load_room(room_id)
                 target = room.get_player(target_user_id) if room else None
-                name = target.first_name if target else "player"
+                name = target.display_name if target else "player"
                 logger.info("Privileged action remove_select executed by %s in room %s", actor_log, room_id)
                 await query.answer()
                 await query.edit_message_text(
-                    f"Remove {name}? If a round is active, it will be voided.",
+                    f"Remove {name}?",
                     reply_markup=kb.get_remove_confirm_keyboard(room_id, target_user_id),
                 )
                 return
@@ -639,10 +811,10 @@ class BotHandlers:
                 target_user_id = int(parts[2])
                 room_before = await self.game_service.db.load_room(room_id)
                 target = room_before.get_player(target_user_id) if room_before else None
-                target_name = target.first_name if target else "Player"
+                target_name = target.display_name if target else "Player"
 
                 success, msg_str, round_voided, can_continue = await self.game_service.remove_player(
-                    room_id, user.id, target_user_id, sender_chat_id=sender_chat_id
+                    room_id, user.id, target_user_id, sender_chat_id=sender_chat_id, actor_name=actor_name
                 )
                 if not success:
                     await query.answer(msg_str, show_alert=True)
@@ -650,15 +822,7 @@ class BotHandlers:
 
                 logger.info("Privileged action remove_confirm executed by %s in room %s", actor_log, room_id)
                 await query.answer()
-                notify_msg = f"⚠️ {target_name} was removed by {actor_name}."
-                if round_voided:
-                    notify_msg += "\n🚫 Round voided due to player removal."
-                    if can_continue:
-                        notify_msg += "\n🔄 Fresh round dealt with remaining players."
-                    else:
-                        notify_msg += "\n⏸ Fewer than 4 players remain. Match paused until more players join or host uses /close."
-
-                await query.edit_message_text(notify_msg)
+                await query.edit_message_text(f"🚫 {target_name} was removed by {actor_name}.")
                 return
 
             if action == "rmcan":
