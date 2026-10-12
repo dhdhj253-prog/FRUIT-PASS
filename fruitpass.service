@@ -1,0 +1,15 @@
+[Unit]
+Description=Fruit Pass Telegram Bot Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/fruit-pass-bot
+ExecStart=/opt/fruit-pass-bot/venv/bin/python -m fruit_pass.bot_app
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/fruit-pass-bot/.env
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+services:
+  fruit-pass-bot:
+    build: .
+    container_name: fruit_pass_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - fruit_pass_data:/data
+    environment:
+      - DB_PATH=/data/fruit_pass.db
+
+volumes:
+  fruit_pass_data:
+    driver: local
