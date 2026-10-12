@@ -77,7 +77,25 @@ async def post_init(application: Application, db: Database, timer_service: Timer
 
 async def post_shutdown(application: Application, timer_service: TimerService):
     timer_service.stop()
-    logger.info("TimerService stopped.")
+def start_dummy_health_server(port: int):
+    """Starts a minimal HTTP server in a background thread for platforms like Render/Heroku/Railway."""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import threading
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, format, *args):
+            return  # Suppress HTTP access logging
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Health check HTTP server started on port %s", port)
 
 
 def main():
@@ -85,6 +103,13 @@ def main():
     if not token:
         logger.error("BOT_TOKEN is not set! Please set BOT_TOKEN in .env or environment.")
         return
+
+    port_env = os.getenv("PORT")
+    if port_env:
+        try:
+            start_dummy_health_server(int(port_env))
+        except Exception as e:
+            logger.warning("Failed to start health server on port %s: %s", port_env, e)
 
     db_path = os.getenv("DB_PATH", "fruit_pass.db")
     db = Database(db_path=db_path)
