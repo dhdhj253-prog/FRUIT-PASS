@@ -14,7 +14,7 @@ TAGLINE = "Pass smart. Match four. Win the round."
 SHORT_DESCRIPTION = "Fast card-passing game for 4 to 8 players. Collect four matching fruits to win!"
 ABOUT_TEXT = (
     "Everyone starts with 4 fruit cards. On your turn, secretly pass one card to the next player "
-    "and try to end up with four of the same fruit. Be the first to claim victory and win the round. "
+    "and try to end up with four of the same fruit. When you pass a card and your 4 cards are all the same fruit, you win the round automatically. "
     "Play 5, 8, or 10 rounds. Most points wins the match."
 )
 WELCOME_MESSAGE = (

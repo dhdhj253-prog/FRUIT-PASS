@@ -246,6 +246,25 @@ class GameEngine:
         return True, winning_rank, None
 
     @staticmethod
+    def check_round_winner_after_pass(
+        room: Room,
+        passer: Player,
+    ) -> Tuple[bool, Optional[int], bool, List[Player]]:
+        """
+        Immediately after a pass is committed, checks the hand of the player who just passed.
+        If all 4 cards are the same fruit, that player is the winner of the round at once.
+        Awards 1 point and concludes the round.
+        Returns (is_win, winning_rank, is_match_over, match_winners).
+        """
+        winning_rank = passer.has_four_of_a_kind()
+        if winning_rank is None:
+            return False, None, False, []
+
+        passer.score += 1
+        is_match_over, match_winners = GameEngine.conclude_round(room, passer.user_id)
+        return True, winning_rank, is_match_over, match_winners
+
+    @staticmethod
     def conclude_round(
         room: Room,
         winner_id: int,

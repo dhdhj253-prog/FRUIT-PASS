@@ -52,7 +52,7 @@ class TestSecurityAndLeaks(unittest.IsolatedAsyncioTestCase):
         winner = Player(user_id=2, room_id=100, first_name="Leo")
         win_msg = msgs.get_round_win_announcement(3, winner, rank=1)
         self.assertIn("Leo", win_msg)
-        self.assertIn("Round 3", win_msg)
+        self.assertIn("3rd round", win_msg)
         self.assertIn("Mango", win_msg)
         self.assertIn("🥭", win_msg)
 

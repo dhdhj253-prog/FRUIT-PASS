@@ -702,22 +702,53 @@ class GameService:
 
             try:
                 passed_card, passer, receiver = GameEngine.pass_card(room, passer_id, card_id)
-                await self.db.save_room(room)
             except ValueError as e:
                 return False, str(e), None, None, None
 
+            # Automatic win check: immediately check passer hand (has 4 cards)
+            is_win, win_rank, is_match_over, match_winners = GameEngine.check_round_winner_after_pass(room, passer)
+
+            await self.db.save_room(room)
             # Invalidate tokens for previous turn in this room
             self.invalidate_room_tokens(chat_id)
 
-            # Update public table message in group
-            await self.update_table_message(
-                room, last_event=msgs.get_turn_announcement(passer, receiver)
-            )
+        # Update public table message in group
+        await self.update_table_message(
+            room, last_event=msgs.get_turn_announcement(passer, receiver)
+        )
 
+        if is_win:
+            await self._handle_round_win(room, passer, win_rank, is_match_over)
+        else:
             # Bot sends its own turn ping tagging the next player
             await self.send_turn_ping(room, receiver)
 
-            return True, None, passed_card, passer, receiver
+        return True, None, passed_card, passer, receiver
+
+    async def _handle_round_win(
+        self,
+        room: Room,
+        winner: Player,
+        win_rank: Optional[int],
+        is_match_over: bool,
+    ) -> None:
+        round_win_msg = msgs.get_round_win_announcement(room.current_round, winner, win_rank)
+        if is_match_over:
+            final_score_text = msgs.get_scoreboard_text(room, is_final=True)
+            full_end_msg = f"{round_win_msg}\n\n🎉 *MATCH COMPLETED!*\n\n{final_score_text}"
+            if self.bot:
+                try:
+                    await self.bot.send_message(chat_id=room.chat_id, text=full_end_msg, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error("Error sending match end msg: %s", e)
+        else:
+            new_room, starter, newly_seated = await self.advance_to_next_round(room.chat_id)
+            if new_room and starter:
+                asyncio.create_task(
+                    self.send_round_transition_messages(
+                        new_room, starter, newly_seated, round_win_msg=round_win_msg
+                    )
+                )
 
     async def process_autopass(
         self,
@@ -738,32 +769,38 @@ class GameService:
 
             try:
                 passed_card, passer, receiver = GameEngine.auto_pass_card(room)
-                await self.db.save_room(room)
             except ValueError as e:
                 logger.error("Auto-pass error in room %s: %s", chat_id, e)
                 return False, None, None
 
+            # Automatic win check: immediately check passer hand (has 4 cards)
+            is_win, win_rank, is_match_over, match_winners = GameEngine.check_round_winner_after_pass(room, passer)
+
+            await self.db.save_room(room)
             self.invalidate_room_tokens(chat_id)
 
-            # Update table message
-            await self.update_table_message(
-                room, last_event=msgs.get_autopass_announcement(passer)
-            )
+        # Update table message
+        await self.update_table_message(
+            room, last_event=msgs.get_autopass_announcement(passer)
+        )
 
-            # Group announcement: "⏱ Auto-passed for [Name]."
-            if self.bot:
-                try:
-                    await self.bot.send_message(
-                        chat_id=room.chat_id,
-                        text=msgs.get_autopass_announcement(passer),
-                    )
-                except Exception as e:
-                    logger.error("Error sending auto-pass announcement: %s", e)
+        # Group announcement: "⏱ Auto-passed for [Name]."
+        if self.bot:
+            try:
+                await self.bot.send_message(
+                    chat_id=room.chat_id,
+                    text=msgs.get_autopass_announcement(passer),
+                )
+            except Exception as e:
+                logger.error("Error sending auto-pass announcement: %s", e)
 
+        if is_win:
+            await self._handle_round_win(room, passer, win_rank, is_match_over)
+        else:
             # Send bot's turn panel to receiver
             await self.send_turn_panel(room, receiver)
 
-            return True, passer, receiver
+        return True, passer, receiver
 
     async def process_claim_victory(
         self,
@@ -987,28 +1024,34 @@ class GameService:
             passer = room.get_active_player()
             try:
                 passed_card, passer, receiver = GameEngine.skip_turn(room)
-                await self.db.save_room(room)
             except ValueError as e:
                 logger.error("Skip error in room %s: %s", chat_id, e)
                 return False, "There's no active turn to skip.", None, None
 
+            # Automatic win check: immediately check passer hand (has 4 cards)
+            is_win, win_rank, is_match_over, match_winners = GameEngine.check_round_winner_after_pass(room, passer)
+
+            await self.db.save_room(room)
             self.invalidate_room_tokens(chat_id)
 
-            skip_text = msgs.get_skipped_announcement(passer.display_name, actor_name)
-            await self.update_table_message(room, last_event=skip_text)
+        skip_text = msgs.get_skipped_announcement(passer.display_name, actor_name)
+        await self.update_table_message(room, last_event=skip_text)
 
-            if self.bot:
-                try:
-                    await self.bot.send_message(
-                        chat_id=room.chat_id,
-                        text=skip_text,
-                        parse_mode="HTML",
-                    )
-                except Exception as e:
-                    logger.error("Error sending skip announcement: %s", e)
+        if self.bot:
+            try:
+                await self.bot.send_message(
+                    chat_id=room.chat_id,
+                    text=skip_text,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error("Error sending skip announcement: %s", e)
 
+        if is_win:
+            await self._handle_round_win(room, passer, win_rank, is_match_over)
+        else:
             await self.send_turn_panel(room, receiver)
-            return True, "", passer, receiver
+        return True, "", passer, receiver
 
     async def add_player(
         self,

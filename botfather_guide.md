@@ -28,7 +28,7 @@ Fast card-passing game for 4 to 8 players. Collect four matching fruits to win!
 Send command: `/setabouttext`  
 Select your bot and paste:
 ```text
-Everyone starts with 4 fruit cards. On your turn, secretly pass one card to the next player and try to end up with four of the same fruit. Be the first to claim victory and win the round. Play 5, 8, or 10 rounds. Most points wins the match.
+Everyone starts with 4 fruit cards. On your turn, secretly pass one card to the next player and try to end up with four of the same fruit. When you pass a card and your 4 cards are all the same fruit, you win the round automatically. Play 5, 8, or 10 rounds. Most points wins the match.
 ```
 
 ---

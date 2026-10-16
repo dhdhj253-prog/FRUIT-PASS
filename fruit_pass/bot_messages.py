@@ -26,7 +26,7 @@ def get_rules_summary_text() -> str:
         "• Be the first to collect four cards of the same fruit!\n"
         "• All card picking is secret and inline: tap *'🎴 My cards'* on the table to see your hand or pass a card.\n"
         "• You have 60 seconds per turn.\n"
-        "• When you have four of a kind, tap *'🏆 CLAIM VICTORY'* to win the round!"
+        "• Get four matching fruits after you pass and you win the round automatically!"
     )
 
 
@@ -107,8 +107,7 @@ def get_rules_text() -> str:
         f"• *Turns*: Tap *'🎴 My cards'* on the table message to view your cards via Telegram Inline Query. "
         f"On your turn, tap an unwanted card to pass it directly to the next player. You have 60s per turn.\n"
         f"• *Passing is Secret*: Card identities are never revealed to other players.\n"
-        f"• *Claim Victory*: If you collect 4-of-a-kind, select *'🏆 Claim victory'* in the inline picker "
-        f"or tap the public *'🏆 CLAIM VICTORY'* button on the table message! Server validates all claims.\n"
+        f"• When you pass a card and your 4 cards are all the same fruit, you win the round automatically.\n"
         f"• *Scoring*: 1 point per round win. Most points after 5, 8, or 10 rounds wins the match!"
     )
 
@@ -203,16 +202,44 @@ def get_autopass_announcement(passer: Player) -> str:
     return f"⏱ Auto-passed for {name}."
 
 
-def get_round_win_announcement(round_num: int, winner: Player, rank: int) -> str:
-    emoji = RANK_EMOJI_BY_INDEX.get(rank, "🍎")
-    name = RANK_NAME_BY_INDEX.get(rank, "Fruit")
-    plural_name = f"{name}s" if not name.endswith("y") else f"{name[:-1]}ies"
-    if name == "Peach":
-        plural_name = "Peaches"
-    elif name == "Mango":
-        plural_name = "Mangos"
-    winner_name = html.escape(get_player_display_name(winner))
-    return f"🏆 {winner_name} wins Round {round_num} with four {emoji} {plural_name}!"
+ORDINALS = {
+    1: "1st",
+    2: "2nd",
+    3: "3rd",
+    4: "4th",
+    5: "5th",
+    6: "6th",
+    7: "7th",
+    8: "8th",
+    9: "9th",
+    10: "10th",
+}
+
+
+def get_round_ordinal(round_num: int) -> str:
+    if round_num in ORDINALS:
+        return ORDINALS[round_num]
+    if 11 <= (round_num % 100) <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(round_num % 10, "th")
+    return f"{round_num}{suffix}"
+
+
+def get_round_win_announcement(round_num: int, winner: Player, rank: Optional[int] = None) -> str:
+    ordinal = get_round_ordinal(round_num)
+    winner_name = get_player_display_name(winner)
+    reveal = ""
+    if rank is not None:
+        emoji = RANK_EMOJI_BY_INDEX.get(rank, "🍎")
+        name = RANK_NAME_BY_INDEX.get(rank, "Fruit")
+        plural_name = f"{name}s" if not name.endswith("y") else f"{name[:-1]}ies"
+        if name == "Peach":
+            plural_name = "Peaches"
+        elif name == "Mango":
+            plural_name = "Mangos"
+        reveal = f" with four {emoji} {plural_name}!"
+    return f"🏆 {ordinal} round is won by {winner_name}!{reveal}"
 
 
 def get_scoreboard_text(room: Room, is_final: bool = False) -> str:

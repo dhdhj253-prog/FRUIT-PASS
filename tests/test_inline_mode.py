@@ -219,9 +219,9 @@ class TestInlineMode(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed_final.turn_nonce, 11)
         self.assertEqual(refreshed_final.active_player_id, 2)
 
-    async def test_claim_result_appears_only_when_four_of_a_kind_and_server_validates(self):
+    async def test_claim_result_never_appears_even_when_four_of_a_kind(self):
         """
-        Claim result appears only when the hand is four of a kind, and the server still validates it.
+        Claim result never appears, even when the hand is four of a kind.
         """
         room = await self._setup_active_room()
 
@@ -234,12 +234,7 @@ class TestInlineMode(unittest.IsolatedAsyncioTestCase):
 
         results = query.answer.call_args[1]["results"]
         # No claim button present
-        self.assertFalse(any("Claim victory" in r.title for r in results))
-
-        # Direct server validation attempt should also fail
-        is_valid, err, _, _, _ = await self.service.process_claim_victory(room.chat_id, 3, room.turn_nonce)
-        self.assertFalse(is_valid)
-        self.assertIn("not four of a kind", err.lower())
+        self.assertFalse(any("claim" in r.title.lower() for r in results))
 
         # Give Charlie 4 Melons (rank 7) (4-of-a-kind)
         charlie = room.get_player(3)
@@ -253,23 +248,8 @@ class TestInlineMode(unittest.IsolatedAsyncioTestCase):
         await self.handlers.handle_inline_query(update, MagicMock())
 
         results2 = query2.answer.call_args[1]["results"]
-        # First result MUST be Claim victory
-        self.assertIn("Claim victory", results2[0].title)
-
-        # Selection of claim token triggers victory
-        claim_token = results2[0].id
-        cir_update = MagicMock(spec=Update)
-        cir = MagicMock(spec=ChosenInlineResult)
-        cir.result_id = claim_token
-        cir.from_user = User(id=3, first_name="Charlie", is_bot=False)
-        cir_update.chosen_inline_result = cir
-
-        await self.handlers.handle_chosen_inline_result(cir_update, MagicMock())
-
-        # Server validated Charlie's claim and awarded score!
-        refreshed = await self.db.load_room(room.chat_id)
-        charlie_refreshed = refreshed.get_player(3)
-        self.assertEqual(charlie_refreshed.score, 1)
+        # No claim result exists anywhere even when holding four of a kind
+        self.assertFalse(any("claim" in r.title.lower() for r in results2))
 
 
 if __name__ == "__main__":

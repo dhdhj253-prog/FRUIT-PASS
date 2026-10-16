@@ -710,47 +710,6 @@ class BotHandlers:
                 await query.edit_message_text("Leaving cancelled.")
                 return
 
-            # Public button or callback Claim Victory
-            if action == "claim":
-                nonce = int(parts[2]) if len(parts) > 2 else None
-                is_valid, err, win_rank, is_match_over, match_winners = await self.game_service.process_claim_victory(
-                    room_id, user.id, nonce
-                )
-
-                if not is_valid:
-                    await query.answer(err or "Invalid claim.", show_alert=True)
-                    return
-
-                await query.answer("🏆 Valid claim! You win the round!", show_alert=False)
-
-                room = await self.game_service.db.load_room(room_id)
-                claimer = room.get_player(user.id) if room else None
-                if not claimer or not room:
-                    return
-
-                round_win_msg = msgs.get_round_win_announcement(
-                    room.current_round,
-                    claimer,
-                    win_rank,
-                )
-
-                if is_match_over:
-                    final_score_text = msgs.get_scoreboard_text(room, is_final=True)
-                    full_end_msg = f"{round_win_msg}\n\n🎉 *MATCH COMPLETED!*\n\n{final_score_text}"
-                    try:
-                        await context.bot.send_message(chat_id=room_id, text=full_end_msg, parse_mode="Markdown")
-                    except Exception as e:
-                        logger.error("Error sending match end msg: %s", e)
-                else:
-                    new_room, starter, newly_seated = await self.game_service.advance_to_next_round(room_id)
-                    if new_room and starter:
-                        asyncio.create_task(
-                            self.game_service.send_round_transition_messages(
-                                new_room, starter, newly_seated, round_win_msg=round_win_msg
-                            )
-                        )
-                return
-
             # Host/Admin room kill confirmation
             if action == "killcnf":
                 is_priv = await self.game_service.is_privileged_user(room_id, user.id, sender_chat_id)
@@ -905,30 +864,6 @@ class BotHandlers:
 
         results = []
 
-        # Claim Victory result if player holds 4 of a kind
-        if player.has_four_of_a_kind() is not None:
-            claim_token = f"c_{room.turn_nonce}_{secrets.token_hex(8)}"
-            self.game_service.register_inline_token(
-                claim_token,
-                {
-                    "type": "claim",
-                    "chat_id": room.chat_id,
-                    "user_id": player.user_id,
-                    "nonce": room.turn_nonce,
-                },
-            )
-            results.append(
-                InlineQueryResultArticle(
-                    id=claim_token,
-                    title="🏆 Claim victory",
-                    description="Four of a kind! Tap to claim round victory",
-                    input_message_content=InputTextMessageContent(
-                        f"🏆 {html.escape(player.display_name)} claims victory!",
-                        parse_mode="HTML",
-                    ),
-                )
-            )
-
         is_my_turn = (room.active_player_id == player.user_id)
         sorted_cards = sorted(player.cards, key=lambda c: (c.rank, c.id))
 
@@ -1015,38 +950,6 @@ class BotHandlers:
 
         if action_type == "view":
             # View-only selection: does nothing in game
-            return
-
-        if action_type == "claim":
-            if not chat_id:
-                return
-            is_valid, err, win_rank, is_match_over, match_winners = await self.game_service.process_claim_victory(
-                chat_id, user.id, nonce
-            )
-            if not is_valid:
-                return
-
-            room = await self.game_service.db.load_room(chat_id)
-            claimer = room.get_player(user.id) if room else None
-            if not claimer or not room:
-                return
-
-            round_win_msg = msgs.get_round_win_announcement(room.current_round, claimer, win_rank)
-            if is_match_over:
-                final_score_text = msgs.get_scoreboard_text(room, is_final=True)
-                full_end_msg = f"{round_win_msg}\n\n🎉 *MATCH COMPLETED!*\n\n{final_score_text}"
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=full_end_msg, parse_mode="Markdown")
-                except Exception as e:
-                    logger.error("Error sending match end msg: %s", e)
-            else:
-                new_room, starter, newly_seated = await self.game_service.advance_to_next_round(chat_id)
-                if new_room and starter:
-                    asyncio.create_task(
-                        self.game_service.send_round_transition_messages(
-                            new_room, starter, newly_seated, round_win_msg=round_win_msg
-                        )
-                    )
             return
 
         if action_type == "pass":

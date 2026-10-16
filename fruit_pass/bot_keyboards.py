@@ -34,12 +34,10 @@ def get_table_keyboard(room: Room) -> InlineKeyboardMarkup:
     """
     Table message inline keyboard:
     - "🎴 My cards": switch_inline_query_current_chat so inline query opens in this chat.
-    - "🏆 CLAIM VICTORY": public claim button (server validates every claim).
     """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎴 My cards", switch_inline_query_current_chat=""),
-            InlineKeyboardButton("🏆 CLAIM VICTORY", callback_data=f"claim:{room.chat_id}:{room.turn_nonce}"),
         ]
     ])
 

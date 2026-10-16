@@ -20,7 +20,7 @@
    - Tapping the button opens Telegram Inline Query to pick a card from their secret hand.
    - When chosen, the bot announces: `🎴 [Player A] passed a card to [Player B]` and immediately triggers the next player's Turn Panel.
 4. **Auto-Pass**: Players have 60 seconds per turn. If inactive, an auto-pass triggers automatically.
-5. **Winning a Round**: Collect **four matching fruits** (e.g., 4x 🍎, 4x 🍌, 4x 🍓, or 4x 🍇) and claim victory before anyone else!
+5. **Winning a Round**: When you pass a card and your 4 cards are all the same fruit, you win the round automatically!
 6. **Winning the Match**: Play across 5, 8, or 10 rounds. The player with the highest total points wins the match!
 
 ---
@@ -134,7 +134,7 @@ python -m fruit_pass.bot_app
 
 To make the bot interactive in groups and inline mode:
 1. Open [@BotFather](https://t.me/BotFather) on Telegram.
-2. Run `/setinline` and choose your bot. Set inline placeholder: `Pass card or claim win...`
+2. Run `/setinline` and choose your bot. Set inline placeholder: `Pass a card...`
 3. Run `/setinlinefeedback` and select **Enabled (100%)**.
 4. Run `/setjoingroups` and select **Enable**.
 5. Run `/setcommands` and paste the list from [`botfather_guide.md`](botfather_guide.md).
@@ -188,7 +188,7 @@ All 69 test cases validate:
 - Host privileges and admin power checks
 - Display names & notification pings
 - Turn flow, auto-pass timer & turn panels
-- Inline query secret card selection & victory claims
+- Inline query secret card selection & automatic winner detection
 
 ---
 
